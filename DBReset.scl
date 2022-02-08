@@ -1,0 +1,54 @@
+﻿FUNCTION "DBReset" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      dbNumber : DInt;
+      Nvariables_a : Int;
+   END_VAR
+
+   VAR_TEMP 
+      "db" : DB_ANY;
+      _byteOffset : Int;
+      _bitOffset : Int;
+	  extra : Int;
+   END_VAR
+
+
+BEGIN
+	//Si Nvariables = 0. Reset de totes les variables del db a l'array.
+	//Si Nvariables <>0. Es fa Reset del número de LWORDS des del començament del DB fins a l'Array.
+	
+	#db := UINT_TO_DB_ANY(WORD_TO_UINT(DINT_TO_WORD(#dbNumber)));
+	
+	IF #Nvariables_a = 0 THEN
+	    
+	    FOR #_byteOffset := 0 TO ("ALARMES_SIZE_ARRAY" * 8) DO
+	        FOR #_bitOffset := 0 TO 7 DO
+	            POKE_BOOL(area := 16#84,
+	                      dbNumber := 250,
+	                      byteOffset := #_byteOffset,
+	                      bitOffset := #_bitOffset,
+	                      value := FALSE,
+	                      ENO => ENO);
+	        END_FOR;
+	    END_FOR;
+	    
+	ELSE
+	    
+	    FOR #_byteOffset := 0 TO (#Nvariables * 8) DO
+	        FOR #_bitOffset := 0 TO 7 DO
+	            POKE_BOOL(area := 16#84,
+	                      dbNumber := 250,
+	                      byteOffset := #_byteOffset,
+	                      bitOffset := #_bitOffset,
+	                      value := FALSE,
+	                      ENO => ENO);
+	        END_FOR;
+	    END_FOR;
+	    
+	END_IF;
+	
+	
+	
+END_FUNCTION
+
