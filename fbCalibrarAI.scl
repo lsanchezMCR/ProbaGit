@@ -1,0 +1,393 @@
+﻿FUNCTION_BLOCK "fbCalibrarAI"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      iNumBascula : Int;
+      iNumLinea : Int;
+      sInfoBascula : String[20];
+      rPuntsLecturaPlc : Real;   // Valor Lectura PLC (Punts)
+      psResetAlarma : Bool;
+      mFirstScan : Bool;
+      bSysOk : Bool;
+   END_VAR
+
+   VAR_OUTPUT 
+      rKgsNet : Real;
+      rKgsBrut : Real;
+      bError : Bool;
+      bEstable : Bool;
+      bBuida : Bool;
+      alLimitTare : Bool;   // Alarma tarat per limits tarat fora rang admes
+      alPointsCal : Bool;   // Alarma calibracio per punts calibracio entrats incorrectes (Diferencia 0)
+      alLimInf : Bool;   // Alarma kgs limit inferior
+      alLimSup : Bool;   // Alarma kgs limit superior
+      alReadInf : Bool;   // Alarma punts limit inferior
+      alReadSup : Bool;   // Alarma punts limit superior
+      alErrLectura : Bool;
+      alComm : Bool;
+      alUnderload : Bool;
+      alOverload : Bool;
+      alOffRange : Bool;
+   END_VAR
+
+   VAR RETAIN
+      Data : "oCalibrateInput" := ((), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), (), t#2s, t#1s, (), (), t#5s, (), (), (), ());
+   END_VAR
+   VAR 
+      tmpPuntsInf_Ok : Bool;
+      tmpPuntsSup_Ok : Bool;
+      tmpValueInf_Ok : Bool;
+      tmpValueSup_Ok : Bool;
+      timDelayAlarma_PuntsInf {InstructionName := 'IEC_TIMER'; LibVersion := '1.0'; S7_SetPoint := 'False'} : IEC_TIMER;
+      timDelayAlarma_PuntsSup {InstructionName := 'IEC_TIMER'; LibVersion := '1.0'; S7_SetPoint := 'False'} : IEC_TIMER;
+      timErrorBascula {InstructionName := 'IEC_TIMER'; LibVersion := '1.0'; S7_SetPoint := 'False'} : IEC_TIMER;
+      timEstabilitat {InstructionName := 'IEC_TIMER'; LibVersion := '1.0'; S7_SetPoint := 'False'} : IEC_TIMER;
+      timBasculaBuida {InstructionName := 'IEC_TIMER'; LibVersion := '1.0'} : IEC_TIMER;
+      timBasculaZero {InstructionName := 'IEC_TIMER'; LibVersion := '1.0'} : IEC_TIMER;
+      bResetTimer : Bool := true;
+   END_VAR
+   VAR RETAIN
+      tMemLastTimer { S7_SetPoint := 'True'} : Time;
+   END_VAR
+   VAR 
+      lstUltimsPesos : Array[0..10] of Real;
+      mAuxTimers : Bool;
+   END_VAR
+
+   VAR_TEMP 
+      rDifValues : Real;   // Diferencia kgs per calcul calibracio
+      rDifPunts : Real;   // Diferencia punts per calcul calibracio
+      tmpError : Bool;
+      tmpEstable : Bool;
+      tmpBuida : Bool;
+      tmpZero : Bool;
+      i : Int;
+      memPulsadorCalibracio : Bool;
+   END_VAR
+
+   VAR CONSTANT 
+      NUM_PESOS : Int := 10;
+   END_VAR
+
+
+BEGIN
+	REGION Info Analog
+	        // 0: 0 POINTS
+	        // 10V : 27648 POINTS
+	        // 32767 H7FFF : OVERFLOW
+	        // -32768 H8000 : UNFERFLOW
+	        
+	END_REGION
+	
+	REGION Inicialitzacio variables
+	    
+	    IF #Data.psReset OR #psResetAlarma THEN
+	        // Reset pulsadors
+	        #Data.psZero := FALSE;
+	        #Data.psCalibra := FALSE;
+	    END_IF;
+	    
+	    IF #Data.psReset OR (NOT #mAuxTimers) OR #psResetAlarma THEN
+	        // Reset alarmes
+	        #Data.alLimitTare := FALSE;
+	        #Data.alPointsCal := FALSE;
+	        
+	        #Data.alReadInf := FALSE;
+	        #Data.alReadSup := FALSE;
+	        
+	        #Data.alLimInf := FALSE;
+	        #Data.alLimSup := FALSE;
+	        
+	        #Data.alComm := FALSE;
+	        #Data.alErrLectura := FALSE;
+	        #Data.alOffRange := FALSE;
+	        #Data.alOverload := FALSE;
+	        #Data.alUnderload := FALSE;
+	        
+	        // Memoria sistema arrencat
+	        #Data.psReset := FALSE;
+	    END_IF;
+	    
+	    // Assignacio valor lectura integer a real
+	    #Data.rPuntsLecturaPlc := #rPuntsLecturaPlc;
+	    
+	    // Per defecte no tenim error. Si n'hi ha s'assginara posteriorment.
+	    #tmpError := FALSE;
+	END_REGION
+	
+	REGION Test Punts Lectura Limits correctes
+	    
+	    // Test retardat lectura punts inferior o underflow.
+	    #tmpPuntsInf_Ok := #Data.rPuntsLecturaPlc >= #Data.rLecturaLimInf;
+	    #timDelayAlarma_PuntsInf.TON(IN:=(NOT #tmpPuntsInf_Ok) AND (NOT #psResetAlarma) AND (NOT #Data.psReset) AND #mAuxTimers, PT:=#Data.tDelayAlarmaPunts);
+	    
+	    IF #timDelayAlarma_PuntsInf.Q THEN
+	        #Data.alReadInf := TRUE;
+	    END_IF;
+	    
+	    #Data.alUnderload := #rPuntsLecturaPlc <= -32760;        // H8000
+	    
+	    // Test retardat lectura punts superior
+	    #tmpPuntsSup_Ok := #Data.rPuntsLecturaPlc <= #Data.rLecturaLimSup;
+	    #timDelayAlarma_PuntsSup.TON(IN := (NOT #tmpPuntsSup_Ok) AND (NOT #psResetAlarma) AND (NOT #Data.psReset) AND #mAuxTimers, PT := #Data.tDelayAlarmaPunts);
+	    
+	    IF #timDelayAlarma_PuntsSup.Q THEN
+	        #Data.alReadSup := TRUE;
+	    END_IF;
+	    
+	    #Data.alOverload := #rPuntsLecturaPlc >= 32760;        // H7FFF
+	    
+	END_REGION
+	
+	REGION Calibrate
+	    #memPulsadorCalibracio := FALSE;
+	    IF #Data.psCalibra THEN
+	        #rDifValues := #Data.rValueCal2 - #Data.rValueCal1;
+	        #rDifPunts := #Data.rPuntsPlc2 - #Data.rPuntsPlc1;
+	        
+	        IF (#rDifPunts <> 0) AND (#rDifValues <> 0) THEN
+	            // Punts entrada calibracio correctes. Control divisio per 0.
+	            #Data.alPointsCal := FALSE;
+	            
+	            #Data.rGain := #rDifValues / #rDifPunts;
+	            #Data.rOffset := (#Data.rValueCal1 - (#Data.rGain * #Data.rPuntsPlc1));
+	            
+	            #Data.bTarada := TRUE;
+	            #Data.rTare := 0.0;
+	        ELSE
+	            // Error punts entrada calibracio.
+	            #Data.alPointsCal := TRUE;
+	        END_IF;
+	        
+	        #Data.psCalibra := FALSE;
+	        #memPulsadorCalibracio := TRUE;
+	    END_IF;
+	    
+	END_REGION
+	
+	REGION Tare - Zero
+	    
+	    IF #Data.psZero THEN
+	        IF (#Data.rValorCalibrat >= #Data.rMinTare) AND (#Data.rValorCalibrat <= #Data.rMaxTare) THEN
+	            #Data.rTare := #Data.rValorCalibrat;
+	            #Data.alLimitTare := FALSE;
+	            #Data.bTarada := TRUE;
+	        ELSE
+	            #Data.alLimitTare := TRUE;
+	            #Data.bTarada := FALSE;
+	        END_IF;
+	        
+	        #Data.psZero := FALSE;
+	    END_IF;
+	    
+	END_REGION
+	
+	REGION Calcul Kgs Calibrats (Calibrat - Brut, Tarat - net)
+	    #Data.rValorCalibrat := (#Data.rGain * #Data.rPuntsLecturaPlc) + #Data.rOffset;
+	    #Data.rValorTarat := #Data.rValorCalibrat - #Data.rTare;
+	END_REGION
+	
+	REGION Inicialitzacio llista pesos
+	    IF #mFirstScan OR #memPulsadorCalibracio THEN
+	        FOR #i := 0 TO #NUM_PESOS DO
+	            #lstUltimsPesos[#i] := #Data.rValorCalibrat;
+	        END_FOR;
+	    END_IF;
+	END_REGION
+	
+	REGION Test Alarmes limits valors calibrats.
+	    #Data.alLimInf := #Data.rValorCalibrat < #Data.rValueLimInf;
+	    #Data.alLimSup := #Data.rValorCalibrat > #Data.rValueLimSup;
+	END_REGION
+	
+	REGION Errors comunicacions
+	    #Data.alErrLectura := #Data.alOverload OR #Data.alUnderload;
+	    #Data.alComm := FALSE;
+	    #Data.alOffRange := #Data.alLimInf OR #Data.alLimSup;
+	END_REGION
+	
+	REGION Error Generic Bascula
+	    #tmpError := #Data.alLimInf OR #Data.alLimSup OR
+	                #Data.alReadInf OR #Data.alReadSup OR
+	                #Data.alErrLectura OR
+	                #Data.alComm OR
+	                #Data.alOffRange OR
+	                #Data.alOverload OR
+	                #Data.alUnderload;
+	
+	    #timErrorBascula.TOF(IN:=(#tmpError AND #mAuxTimers), PT:=#Data.tDelayError);
+	    #Data.bError:= #timErrorBascula.Q;
+	                
+	END_REGION
+	
+	REGION Test Pes Estable
+	    // Calcul interval interval lectura -> Data.tIntervalTestEstable
+	    //      Si interval = t#5s ---> LLegir cada 5/10 = 0.5 segons, per poder comparar entre primer i ultim valor de la llista.
+	    //      
+	    
+	    // Test canvi valor interval, per inicialitzar timer.
+	    IF #Data.tIntervalTestEstable <> #tMemLastTimer THEN
+	        #bResetTimer := TRUE;
+	    END_IF;
+	    
+	    // Timer polsos memoritzacio i test estabilitat.
+	    #timEstabilitat.TON(IN := #mAuxTimers AND (NOT #bResetTimer), PT := #Data.tIntervalTestEstable/10);
+	    
+	    // Validacio timer estabilitat, per guardar nou valor.
+	    IF #timEstabilitat.Q THEN
+	        // Desplaçament pesos
+	        FOR #i := 2 TO 10 DO
+	            #lstUltimsPesos[#i - 1] := #lstUltimsPesos[#i];
+	        END_FOR;
+	        
+	        // Memoria nou valor.
+	        #lstUltimsPesos[10] := #Data.rValorCalibrat;
+	        
+	        // Calcul variacio pes
+	        #Data.rVariacioValor := ABS( #lstUltimsPesos[10] -  #lstUltimsPesos[1]);
+	        
+	        // Test variacio dins marges estabilitat
+	        IF #Data.rVariacioValor <= #Data.rLimitEstabilitat THEN
+	            #Data.bEstable := TRUE;
+	        ELSE
+	            #Data.bEstable := FALSE;
+	        END_IF;
+	        
+	        // Registre valor reset, per inicialitzar timer
+	        #bResetTimer := TRUE;
+	    ELSE
+	        #bResetTimer := FALSE;
+	    END_IF;
+	    
+	    // Teset error bascula, per indicar pes estable.
+	    IF #Data.bError OR (NOT #mAuxTimers) THEN
+	        #Data.bEstable := FALSE;
+	    END_IF;
+	    
+	    // Memoria ultim valor interval. Per inicialitzar timer, en cas de variar valor.
+	    #tMemLastTimer := #Data.tIntervalTestEstable;
+	    
+	END_REGION
+	
+	REGION Asistent Calibracio
+	    CASE #Data.iStep_Wizard OF
+	        0:  // Cap operacio
+	            ;
+	        1:  // Lectura Zero
+	            #Data.rPuntsZero_Wizard := #Data.rPuntsLecturaPlc;
+	            #Data.bShowError_Wizard := FALSE;
+	            ;
+	        2:  // Lectura Referencia
+	            #Data.rPuntsRef_Wizard := #Data.rPuntsLecturaPlc;
+	            #Data.bShowError_Wizard := FALSE;
+	            
+	        3:  // Espera validar calibracio
+	            #rDifValues := #Data.rValorReferencia_Wizard - #Data.rValorZero_Wizard;
+	            #rDifPunts := #Data.rPuntsRef_Wizard - #Data.rPuntsZero_Wizard;
+	            
+	            IF (#rDifPunts > 100) AND (#rDifValues > 0) THEN
+	                // Punts entrada calibracio correctes. Control divisio per 0.
+	                #Data.alPointsCal := FALSE;
+	                
+	                #Data.rGain_Wizard := #rDifValues / #rDifPunts;
+	                #Data.rOffset_Wizard := (#Data.rValorZero_Wizard - (#Data.rGain_Wizard * #Data.rPuntsZero_Wizard));
+	                
+	                #Data.rBrut_Wizard := (#Data.rPuntsLecturaPlc * #Data.rGain_Wizard) + #Data.rOffset_Wizard;
+	                
+	                #Data.bShowAceptar_Wizard := TRUE;
+	                #Data.bShowError_Wizard := FALSE;
+	            ELSE
+	                // Error punts entrada calibracio.
+	                #Data.rGain_Wizard := 0.0;
+	                #Data.rOffset_Wizard := 0.0;
+	                #Data.rBrut_Wizard := 0.0;
+	                
+	                #Data.alPointsCal := TRUE;
+	                #Data.bShowAceptar_Wizard := FALSE;
+	                #Data.bShowError_Wizard := TRUE;
+	            END_IF;
+	            
+	        4:  // Calibracio validada
+	            #Data.rPuntsPlc1 := #Data.rPuntsZero_Wizard;
+	            #Data.rPuntsPlc2 := #Data.rPuntsRef_Wizard;
+	            #Data.rValueCal1 := #Data.rValorZero_Wizard;
+	            #Data.rValueCal2 := #Data.rValorReferencia_Wizard;
+	            
+	            #Data.psCalibra := TRUE;
+	            #Data.iStep_Wizard := 0;
+	            
+	        ELSE  // Statement section ELSE
+	            #Data.iStep_Wizard := 0;
+	            
+	    END_CASE;
+	    
+	END_REGION
+	
+	REGION Status nivell kgs
+	    IF #Data.alLimInf THEN
+	        #Data.iStatusKgs := 10;
+	    ELSIF #Data.alLimSup THEN
+	        #Data.iStatusKgs := 10;
+	    ELSIF (#Data.rValorTarat < #Data.rAvisNivellMinim) THEN
+	        #Data.iStatusKgs := 11;
+	    ELSIF (#Data.rValorTarat > #Data.rAvisNivellMaxim) THEN
+	        #Data.iStatusKgs := 11;
+	    ELSE
+	        #Data.iStatusKgs := 0;
+	    END_IF;
+	END_REGION
+	
+	REGION % Plena sitja
+	    #Data.rPctPlena := (#Data.rValorTarat / (#Data.rValueLimSup - #Data.rValueLimInf)) * 100.0;
+	    
+	    IF (#Data.rPctPlena <= 0.0) THEN
+	        #Data.rPctPlena := 0.0;
+	    END_IF;
+	    
+	    IF (#Data.rPctPlena >= 100.0) THEN
+	        #Data.rPctPlena := 100.0;
+	    END_IF;
+	END_REGION
+	
+	REGION Test Bascula Buida
+	    #tmpBuida := #Data.rValorTarat <= #Data.rKgsBasculaBuida;
+	    #timBasculaBuida.TON(IN := #mAuxTimers AND #tmpBuida, PT := #Data.tBasculaBuida);
+	    
+	    #tmpZero := #Data.rValorTarat <= #Data.rKgsBasculaZero;
+	    #timBasculaZero.TON(IN := #mAuxTimers AND #tmpZero, PT := #Data.tBasculaZero);
+	    
+	    #Data.bBuida := #timBasculaBuida.Q OR #timBasculaZero.Q;
+	END_REGION
+	
+	REGION Aux Timers
+	    #mAuxTimers := #bSysOk AND (NOT #mFirstScan);
+	END_REGION
+	
+	REGION Asignar sortides FB
+	    #rKgsNet := #Data.rValorTarat;
+	    #rKgsBrut := #Data.rValorCalibrat;
+	    
+	    #bError := #Data.bError;
+	    #bEstable := #Data.bEstable;
+	    #bBuida := #Data.bBuida;
+	    
+	    #alLimitTare := #Data.alLimitTare;
+	    #alPointsCal := #Data.alPointsCal;
+	    #alLimInf := #Data.alLimInf;
+	    #alLimSup := #Data.alLimSup;
+	    #alReadInf := #Data.alReadInf;
+	    #alReadSup := #Data.alReadSup;
+	    #alErrLectura := #Data.alErrLectura;
+	    #alComm := #Data.alComm;
+	    #alUnderload := #Data.alUnderload;
+	    #alOverload := #Data.alOverload;
+	    #alOffRange := #Data.alOffRange;
+	END_REGION
+	
+	REGION Dades bascula HMI
+	    #Data.iNumBascula := #iNumBascula;
+	    #Data.iNumLinea := #iNumLinea;
+	    #Data.sInfoBascula := #sInfoBascula;
+	END_REGION
+END_FUNCTION_BLOCK
+
