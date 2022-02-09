@@ -11,6 +11,8 @@ VERSION : 0.1
       sdfsdf : Bool;
       sdfsdf_1 : Bool;
       sdfsdf_2 : Bool;
+      sdfsdf_3 : Bool;
+      sdfsdf_4 : Bool;
    END_VAR
 
    VAR_TEMP 
