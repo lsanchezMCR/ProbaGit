@@ -76,7 +76,7 @@ BEGIN
 	        // 10V : 27648 POINTS
 	        // 32767 H7FFF : OVERFLOW
 	        // -32768 H8000 : UNFERFLOW
-	        
+	        //hgfhgfh
 	END_REGION
 	
 	REGION Inicialitzacio variables
